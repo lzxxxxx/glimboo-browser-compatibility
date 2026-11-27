@@ -24,6 +24,7 @@ jobs:
     # 只在公开仓库运行，使用免费的标准托管运行器。
     if: github.event.repository.private == false
     name: ${{ matrix.project }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
