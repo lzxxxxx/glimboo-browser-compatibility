@@ -31,12 +31,12 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - { project: chrome, os: ubuntu-latest, install: chrome }
-          - { project: edge, os: windows-latest, install: msedge }
-          - { project: firefox, os: ubuntu-latest, install: firefox }
-          - { project: webkit, os: macos-latest, install: webkit }
-          - { project: mobile-chrome, os: ubuntu-latest, install: chromium }
-          - { project: mobile-webkit, os: macos-latest, install: webkit }
+          - { project: chrome, os: ubuntu-24.04, install: chrome }
+          - { project: edge, os: windows-2022, install: msedge }
+          - { project: firefox, os: ubuntu-24.04, install: firefox }
+          - { project: webkit, os: macos-15, install: webkit }
+          - { project: mobile-chrome, os: ubuntu-24.04, install: chromium }
+          - { project: mobile-webkit, os: macos-15, install: webkit }
     env:
       COMPAT_BASE_URL: ${{ inputs.base_url }}
       COMPAT_OUTPUT_DIR: ${{ github.workspace }}/scratchpad/browser-compatibility
