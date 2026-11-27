@@ -147,13 +147,13 @@ jobs:
           cat > 'playwright.config.mjs' <<'GLIMBOO_COMPAT_FILE_EOF'
           import { defineConfig, devices } from '@playwright/test';
           import { resolve } from 'node:path';
-          
+
           const target = new URL(process.env.COMPAT_BASE_URL || 'https://www.glimboo.com');
           if (!['https:', 'http:'].includes(target.protocol) || target.username || target.password) {
             throw new Error('COMPAT_BASE_URL 必须是没有账号密码的 HTTP(S) 地址');
           }
           const output = resolve(process.env.COMPAT_OUTPUT_DIR || '../../scratchpad/browser-compatibility');
-          
+
           export default defineConfig({
             testDir: '.',
             testMatch: 'compatibility.spec.mjs',
@@ -193,9 +193,9 @@ jobs:
           cat > 'compatibility.spec.mjs' <<'GLIMBOO_COMPAT_FILE_EOF'
           import { test as base, expect } from '@playwright/test';
           import { platform, arch } from 'node:os';
-          
+
           const categoryPath = '/category/glim-series/3';
-          
+
           const test = base.extend({
             diagnostics: [async ({ page, browser, browserName }, use, testInfo) => {
               const origin = new URL(testInfo.project.use.baseURL).origin;
@@ -240,14 +240,14 @@ jobs:
               expect.soft(report.resourceFailures, '站内脚本和样式应成功加载').toEqual([]);
             }, { auto: true }],
           });
-          
+
           async function visit(page, path) {
             const response = await page.goto(path, { waitUntil: 'domcontentloaded' });
             expect(response, `页面 ${path} 应有 HTTP 响应`).not.toBeNull();
             expect(response.status(), `页面 ${path} 的 HTTP 状态`).toBeLessThan(400);
             await expect(page.locator('main')).toBeVisible();
             await expect(page.getByRole('button', { name: 'Open search', exact: true })).toBeVisible();
-            await expect(page.getByRole('button', { name: 'Account', exact: true })).toBeEnabled();
+            await expect(page.getByRole('banner').getByRole('button', { name: 'Account', exact: true })).toBeEnabled();
             const cookieDialog = page.getByRole('dialog', { name: 'Cookie consent', exact: true });
             if (await cookieDialog.isVisible()) {
               await cookieDialog.getByRole('button', { name: 'Reject All', exact: true }).click();
@@ -255,7 +255,7 @@ jobs:
             }
             await expect(page.locator('main')).not.toHaveText('');
           }
-          
+
           async function audit(page, testInfo, label) {
             // 逐屏滚动以触发懒加载；动画按浏览器帧等待，不用固定秒数掩盖加载失败。
             const height = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -273,7 +273,7 @@ jobs:
             }
             await page.evaluate(() => window.scrollTo(0, 0));
             await waitForVisibleImages();
-          
+
             const layout = await page.evaluate(() => {
               const width = document.documentElement.clientWidth;
               return {
@@ -301,7 +301,7 @@ jobs:
               .toBeLessThanOrEqual(layout.viewportWidth + 2);
             expect.soft(layout.brokenImages, `${label} 的内容图片不应破图`).toEqual([]);
           }
-          
+
           for (const [label, path] of [
             ['首页', '/'],
             ['商品分类', categoryPath],
@@ -316,7 +316,7 @@ jobs:
               await audit(page, testInfo, label);
             });
           }
-          
+
           test('商品详情：从真实分类链接进入', async ({ page }, testInfo) => {
             await visit(page, categoryPath);
             const product = page.locator('main a[href^="/product/"]').first();
@@ -327,7 +327,7 @@ jobs:
             await expect(page.locator('main h1')).toBeVisible();
             await audit(page, testInfo, '商品详情');
           });
-          
+
           test('搜索：打开搜索框并使用回车搜索', async ({ page }, testInfo) => {
             await visit(page, '/');
             await page.getByRole('button', { name: 'Open search', exact: true }).click();
@@ -341,7 +341,7 @@ jobs:
             await expect(page.locator('main a[href^="/product/"]').first()).toBeVisible();
             await audit(page, testInfo, '搜索结果');
           });
-          
+
           test('排序：价格升序同步到 URL，刷新后保留', async ({ page }, testInfo) => {
             await visit(page, categoryPath);
             const sort = page.getByRole('button', { name: /^Sort/ });
@@ -353,7 +353,7 @@ jobs:
             await expect(sort).toContainText('Price Low to High');
             await audit(page, testInfo, '排序后列表');
           });
-          
+
           test('导航：移动菜单或桌面分类导航可操作', async ({ page }, testInfo) => {
             await visit(page, '/');
             const menu = page.getByRole('button', { name: 'Open menu', exact: true });
@@ -377,10 +377,10 @@ jobs:
             }
             await audit(page, testInfo, '导航操作后');
           });
-          
+
           test('账号入口：游客进入登录页且表单可见', async ({ page }, testInfo) => {
             await visit(page, '/');
-            const account = page.getByRole('button', { name: 'Account', exact: true });
+            const account = page.getByRole('banner').getByRole('button', { name: 'Account', exact: true });
             await expect(account).toBeEnabled();
             await account.click();
             await expect(page).toHaveURL(/\/login/);
