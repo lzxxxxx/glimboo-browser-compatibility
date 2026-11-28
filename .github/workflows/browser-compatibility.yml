@@ -4,6 +4,9 @@ name: Website browser compatibility
 run-name: Browser compatibility (${{ inputs.suite || 'purchase' }}) — ${{ inputs.base_url || 'https://www.glimboo.com' }}
 
 on:
+  push:
+    branches: [codex/purchase-compatibility-run]
+    paths: [.github/workflows/browser-compatibility.yml]
   workflow_dispatch:
     inputs:
       base_url:
