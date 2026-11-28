@@ -1,7 +1,7 @@
 # 自动生成：修改 tools/browser-compatibility 后运行 node scripts/export-browser-compatibility.mjs。
 # 此文件自带全部测试代码，可以单独放进一个公开 GitHub 仓库。
 name: Website browser compatibility
-run-name: Browser compatibility — ${{ inputs.base_url || 'https://www.glimboo.com' }}
+run-name: Browser compatibility (${{ inputs.suite || 'purchase' }}) — ${{ inputs.base_url || 'https://www.glimboo.com' }}
 
 on:
   workflow_dispatch:
@@ -11,6 +11,15 @@ on:
         required: true
         default: https://www.glimboo.com
         type: string
+      suite:
+        description: Test suite (purchase uses isolated API fixtures)
+        required: true
+        default: purchase
+        type: choice
+        options:
+          - purchase
+          - pages
+          - all
 
 permissions:
   contents: read
@@ -39,6 +48,7 @@ jobs:
           - { project: mobile-webkit, os: macos-15, install: webkit }
     env:
       COMPAT_BASE_URL: ${{ inputs.base_url }}
+      COMPAT_SUITE: ${{ inputs.suite }}
       COMPAT_OUTPUT_DIR: ${{ github.workspace }}/scratchpad/browser-compatibility
     defaults:
       run:
@@ -199,10 +209,12 @@ jobs:
             throw new Error('COMPAT_BASE_URL 必须是没有账号密码的 HTTP(S) 地址');
           }
           const output = resolve(process.env.COMPAT_OUTPUT_DIR || '../../scratchpad/browser-compatibility');
+          const suite = process.env.COMPAT_SUITE || 'purchase';
+          if (!['purchase', 'pages', 'all'].includes(suite)) throw new Error('COMPAT_SUITE 必须为 purchase、pages 或 all');
 
           export default defineConfig({
             testDir: '.',
-            testMatch: 'compatibility.spec.mjs',
+            testMatch: suite === 'all' ? '*.spec.mjs' : suite === 'pages' ? 'compatibility.spec.mjs' : 'purchase.spec.mjs',
             outputDir: resolve(output, 'results'),
             fullyParallel: false,
             workers: 1,
@@ -488,6 +500,477 @@ jobs:
             await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeDisabled();
             expect(submissions, '非法表单不应调用提交接口').toBe(0);
             await audit(page, testInfo, '联系表单校验');
+          });
+          GLIMBOO_COMPAT_FILE_EOF
+          cat > 'purchase-fixtures.mjs' <<'GLIMBOO_COMPAT_FILE_EOF'
+          import { test as base, expect } from '@playwright/test';
+          import { platform, arch } from 'node:os';
+
+          const amount = value => ({ value, currency: 'USD' });
+          export const testAddress = {
+            id: 7001, firstname: 'Browser', lastname: 'Test', company: '', telephone: '2025550123',
+            street: ['123 Compatibility Lane', 'Suite 2'], city: 'Austin', region: 'Texas', region_id: 43,
+            postcode: '78701', country_id: 'US', default_billing: true, default_shipping: true,
+          };
+
+          export const test = base.extend({
+            scenario: [async ({ page, browser, browserName }, use, testInfo) => {
+              const state = {
+                authenticated: true, qty: 2, stock: true, addresses: [], selectedAddressId: null,
+                payment: '', coupon: false, rejectAddress: false, rejectQuantity: false,
+                rejectCheckout: false, quantityGate: null, requests: [], blocked: [], pageErrors: [],
+              };
+              const origin = new URL(testInfo.project.use.baseURL).origin;
+              const cartId = 'compatibility-isolated-cart';
+              // 仅放入非敏感会话标记以启动页面 hydrate；全部身份接口在下面隔离，未使用真实 token。
+              await page.context().addCookies([
+                { name: 'auth_has_session', value: '1', url: origin },
+                { name: 'auth_token_expires_at', value: String(Math.floor(Date.now() / 1000) + 3600), url: origin },
+              ]);
+              const coupons = () => [{
+                code: 'TEST5', title: 'Compatibility test coupon', description: 'Isolated test data',
+                discount_type: 'by_fixed', discount_amount: 5, expires_at: null,
+                status: state.coupon ? 'applied' : 'available', unavailable_reason: null,
+              }, {
+                code: 'EXPIRED', title: 'Expired test coupon', description: null,
+                discount_type: 'by_fixed', discount_amount: 5, expires_at: '2020-01-01',
+                status: 'expired', unavailable_reason: 'Expired',
+              }];
+              const cart = () => {
+                const subtotal = Math.round(state.qty * 19.99 * 100) / 100;
+                const discount = state.coupon ? -5 : 0;
+                const totals = {
+                  subtotal: amount(subtotal), discount: amount(discount), tax: amount(0),
+                  grand_total: amount(Math.round((subtotal + discount) * 100) / 100),
+                  segments: [
+                    { code: 'subtotal', title: 'Subtotal', value: subtotal },
+                    { code: 'discount', title: 'Discount', value: discount },
+                    { code: 'shipping', title: 'Shipping', value: 0 },
+                    { code: 'tax', title: 'Tax', value: 0 },
+                    { code: 'grand_total', title: 'Total', value: Math.round((subtotal + discount) * 100) / 100 },
+                  ],
+                };
+                return {
+                  cart: { id: cartId, identity_type: state.authenticated ? 'customer' : 'guest',
+                    items_count: state.qty ? 1 : 0, is_virtual: false, currency: 'USD', messages: [] },
+                  items: state.qty ? [{
+                    item_id: 9001, product_id: 6, sku: 'COMPATIBILITY-TEST', identifier: '6gBNTC',
+                    name: 'COSMOS BEAR Compatibility Test Item', qty: state.qty, salable_qty: state.stock ? 20 : 0,
+                    product_type: 'simple', image_url: origin + '/home/footer_candy.webp',
+                    product_url: '/product/cosmos-bear-music-lollipop-gift-box/6gBNTC',
+                    unit_price: amount(19.99), row_total: amount(subtotal), messages: [],
+                    availability: { status: state.stock ? 'available' : 'out_of_stock', message: state.stock ? null : 'Out of stock' },
+                  }] : [],
+                  totals, free_shipping_progress: null,
+                  checkout_preview: { can_checkout: state.stock && state.qty > 0, items_qty: state.qty,
+                    excluded_item_ids: state.stock ? [] : [9001],
+                    blocking_message: state.stock ? null : 'This item is out of stock',
+                    totals: state.stock ? totals : null, free_shipping_progress: null },
+                };
+              };
+              const checkout = () => ({
+                checkout_revision: 'isolated-test-revision', identity_type: 'customer', excluded_items: [],
+                cart: cart().cart, items: cart().items,
+                address: { mode: 'saved', selected_address_id: state.selectedAddressId,
+                  selected_address: state.addresses.find(a => a.id === state.selectedAddressId) ?? null,
+                  available_addresses: state.addresses },
+                shipping_method: { code: 'free_free', title: 'Free Shipping' },
+                payment_method: { code: state.payment || null, title: state.payment || null },
+                coupon: { code: state.coupon ? 'TEST5' : null, applied: state.coupon },
+                available_coupons: coupons(), marketing_preferences: { email_marketing_opt_in: false },
+                available_shipping_methods: [{ code: 'free_free', title: 'Free Shipping', amount: amount(0) }],
+                available_payment_methods: [{ code: 'stripe_card', title: 'Credit / Debit Card' }, { code: 'paypal_express', title: 'PayPal' }],
+                free_shipping_progress: null, totals: cart().totals,
+              });
+              const success = (route, data) => route.fulfill({ json: { success: true, code: 'OK', message: 'OK', data, request_id: 'isolated-test' } });
+              const failure = (route, status, code, message, errors) => route.fulfill({ status, json: { success: false, code, message, errors, request_id: 'isolated-test' } });
+              page.on('pageerror', error => state.pageErrors.push(error.message));
+              await page.route('**/api/**', async route => {
+                const request = route.request();
+                const path = new URL(request.url()).pathname;
+                const method = request.method();
+                if (path.endsWith('/envelope/')) return route.fulfill({ status: 204 });
+                const body = method === 'GET' ? null : request.postDataJSON();
+                state.requests.push({ path, method, body });
+                if (/placeOrder|\/payment(?:\/|$)|\/orders(?:\/|$)/i.test(path)) {
+                  state.blocked.push(path);
+                  return failure(route, 409, 'TEST_GUARD', 'Order and payment requests are blocked');
+                }
+                if (path === '/api/customer/profile') {
+                  if (!state.authenticated) {
+                    await page.context().clearCookies({ name: /^auth_/ });
+                    return failure(route, 401, 'UNAUTHORIZED', 'Please log in');
+                  }
+                  return success(route, { id: 7000, email: 'browser@example.invalid', firstname: 'Browser', lastname: 'Test',
+                    name_is_placeholder: false, dob: '', gender: null, addresses: state.addresses });
+                }
+                if (path.startsWith('/api/auth/')) return failure(route, 401, 'UNAUTHORIZED', 'Isolated test session');
+                if (path === '/api/cart') return success(route, cart());
+                if (path === '/api/cart/itemsUpdateQty') {
+                  if (state.quantityGate) await state.quantityGate;
+                  if (state.rejectQuantity) return failure(route, 422, 'CART_QTY_NOT_AVAILABLE', 'Only 2 items are available');
+                  state.qty = body.qty;
+                  return success(route, cart());
+                }
+                if (path === '/api/cart/itemsDelete') { state.qty = 0; return success(route, cart()); }
+                if (path === '/api/checkout') return state.rejectCheckout
+                  ? failure(route, 409, 'CHECKOUT_CART_NOT_SALABLE', 'This cart is no longer available')
+                  : success(route, { checkout: checkout() });
+                if (path === '/api/customer/address' && method === 'GET') return success(route, { addresses: state.addresses });
+                if (path === '/api/customer/address' || path === '/api/customer/addressUpdate') {
+                  if (state.rejectAddress) return failure(route, 422, 'CUSTOMER_ADDRESS_VALIDATION_FAILED', 'Please review your address',
+                    [{ field: 'street.0', reason: 'PO_BOX_NOT_ALLOWED', message: 'P.O. boxes are not supported' }]);
+                  const address = { ...testAddress, ...body, id: body.address_id ?? 7001 + state.addresses.length,
+                    region: body.region_id === 5 ? 'California' : 'Texas' };
+                  state.addresses = [...state.addresses.filter(a => a.id !== address.id), address];
+                  return success(route, { addresses: state.addresses });
+                }
+                if (path === '/api/customer/addressDelete') {
+                  state.addresses = state.addresses.filter(a => a.id !== body.address_id);
+                  return success(route, { addresses: state.addresses });
+                }
+                if (path === '/api/checkout/address') {
+                  state.selectedAddressId = body.address_id;
+                  return success(route, { checkout: checkout() });
+                }
+                if (path === '/api/checkout/payment-method') {
+                  state.payment = body.payment_method_code;
+                  return success(route, { checkout: checkout() });
+                }
+                if (path === '/api/checkout/coupon') {
+                  if (body.coupon_code !== 'TEST5') return failure(route, 422, 'COUPON_INVALID', 'Invalid coupon code');
+                  state.coupon = true;
+                  return success(route, { checkout: checkout() });
+                }
+                if (path === '/api/checkout/couponRemove') {
+                  state.coupon = false;
+                  return success(route, { checkout: checkout() });
+                }
+                if (path === '/api/directory/addressMeta') return success(route, {
+                  country_id: 'US', country_name: 'United States', address_schema_version: 1,
+                  fields: { country_id: { component: 'hidden', required: true, value: 'US' },
+                    region: { component: 'select', required: true, input_mode: 'option', options: [
+                      { label: 'California', value: 5, code: 'CA' }, { label: 'Texas', value: 43, code: 'TX' },
+                    ] }, city: { component: 'input', required: true }, postcode: { component: 'input', required: true } },
+                  defaults: { country_id: 'US' },
+                });
+                if (method !== 'GET' && method !== 'HEAD') {
+                  state.blocked.push(path);
+                  return failure(route, 405, 'TEST_GUARD', 'Unexpected mutation blocked');
+                }
+                return route.continue();
+              });
+              testInfo.annotations.push({ type: '页面分组', description: '购买流程（模拟接口）' },
+                { type: '数据来源', description: '真实线上页面；购买、用户和地址接口由 Playwright 隔离模拟；不创建真实订单或地址' });
+              await use(state);
+              const layers = await page.locator('[role="dialog"]').evaluateAll(dialogs => dialogs.map(dialog => {
+                const style = getComputedStyle(dialog);
+                const rect = dialog.getBoundingClientRect();
+                return { name: dialog.getAttribute('aria-labelledby'), opacity: style.opacity,
+                  visibility: style.visibility, pointerEvents: style.pointerEvents,
+                  x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+              })).catch(() => []);
+              await testInfo.attach('browser-diagnostics', { contentType: 'application/json', body: JSON.stringify({
+                project: testInfo.project.name, browserName, browserVersion: browser.version(),
+                os: platform(), architecture: arch(), viewport: page.viewportSize(), url: page.url(),
+                testTitle: testInfo.title, annotations: testInfo.annotations, pageErrors: state.pageErrors,
+                consoleErrors: [], requests: state.requests, blockedRequests: state.blocked, dialogLayers: layers,
+                userAgent: await page.evaluate(() => navigator.userAgent).catch(() => null),
+              }) });
+              expect.soft(state.pageErrors, '购买流程不应出现未捕获脚本异常').toEqual([]);
+              expect.soft(state.blocked, '测试不应尝试创建真实订单、支付或未知写请求').toEqual([]);
+            }, { auto: true }],
+          });
+
+          export { expect };
+
+          export async function openPurchasePage(page, path) {
+            const response = await page.goto(path, { waitUntil: 'domcontentloaded' });
+            expect(response.status()).toBeLessThan(400);
+            await expect(page.getByRole('banner').getByRole('button', { name: 'Account', exact: true })).toBeEnabled();
+            const cookie = page.getByRole('dialog', { name: 'Cookie consent', exact: true });
+            if (await cookie.isVisible()) await cookie.getByRole('button', { name: 'Reject All', exact: true }).click();
+          }
+
+          export async function capturePurchase(page, testInfo, label, dialog) {
+            if (dialog) await expect(dialog).toBeVisible();
+            await expect.poll(() => page.locator('main img').evaluateAll(images => images
+              .filter(img => { const r = img.getBoundingClientRect(); return r.width && r.height && r.top < innerHeight && r.bottom > 0; })
+              .every(img => img.complete && img.naturalWidth > 0)), { timeout: 20_000 }).toBe(true);
+            const layout = await page.evaluate(() => ({ width: document.documentElement.clientWidth, scrollWidth: document.documentElement.scrollWidth }));
+            await testInfo.attach(label + '-layout', { body: JSON.stringify(layout), contentType: 'application/json' });
+            await testInfo.attach(label + '-screenshot', {
+              // 购买页含固定定位弹窗，使用视口截图保留用户实际可见的关闭状态。
+              body: await page.screenshot({ type: 'jpeg', quality: 80, fullPage: false, scale: 'css', animations: 'allow' }),
+              contentType: 'image/jpeg',
+            });
+            expect.soft(layout.scrollWidth, '购买页面不应整页横向溢出').toBeLessThanOrEqual(layout.width + 2);
+            if (dialog) {
+              const box = await dialog.boundingBox();
+              expect.soft(box.x, '弹窗左侧应在视口内').toBeGreaterThanOrEqual(-2);
+              expect.soft(box.x + box.width, '弹窗右侧应在视口内').toBeLessThanOrEqual(page.viewportSize().width + 2);
+            }
+          }
+          GLIMBOO_COMPAT_FILE_EOF
+          cat > 'purchase.spec.mjs' <<'GLIMBOO_COMPAT_FILE_EOF'
+          import { test, expect, testAddress, openPurchasePage, capturePurchase } from './purchase-fixtures.mjs';
+
+          const checkoutButton = page => page.getByRole('button', { name: /^Checkout\(/ }).filter({ visible: true });
+          const addressDialog = page => page.getByRole('dialog', { name: 'Shipping Address', exact: true });
+          const placeOrderButton = page => page.getByRole('button', { name: 'PLACE ORDER', exact: true }).filter({ visible: true });
+          const writeRequests = (scenario, path) => scenario.requests.filter(r => r.path === path && r.method === 'POST');
+
+          async function openCheckout(page) {
+            await openPurchasePage(page, '/checkout');
+            await expect(page.getByRole('heading', { name: 'Payment Method', exact: true })).toBeVisible();
+          }
+
+          async function openAddress(page) {
+            await openCheckout(page);
+            await page.getByRole('button', { name: 'Add Shipping Address', exact: true }).click();
+            await expect(addressDialog(page)).toBeInViewport();
+            return addressDialog(page);
+          }
+
+          async function fillAddress(page, overrides = {}) {
+            const values = { firstname: 'Browser', lastname: 'Test', street: '123 Compatibility Lane',
+              street2: 'Suite 2', city: 'Austin', postcode: '78701', telephone: '2025550123', ...overrides };
+            for (const [field, value] of Object.entries(values)) await page.locator('#acct-addr-' + field).fill(value);
+            await page.locator('#acct-addr-region').selectOption('43');
+          }
+
+          test('购物车：有商品时展示价格、数量和结算入口', async ({ page }, testInfo) => {
+            await openPurchasePage(page, '/cart');
+            await expect(page.getByRole('textbox', { name: 'Quantity', exact: true })).toHaveValue('2');
+            await expect(checkoutButton(page)).toBeEnabled();
+            await expect(page.locator('main')).toContainText('$39.98');
+            await capturePurchase(page, testInfo, '有商品购物车');
+          });
+
+          test('购物车：增减数量、请求期间禁用结算、刷新保留', async ({ page, scenario }, testInfo) => {
+            await openPurchasePage(page, '/cart');
+            const quantity = page.getByRole('textbox', { name: 'Quantity', exact: true });
+            await expect(quantity).toHaveValue('2');
+            let release;
+            scenario.quantityGate = new Promise(resolve => { release = resolve; });
+            await page.getByRole('button', { name: 'Increase quantity', exact: true }).click();
+            try { await expect(checkoutButton(page)).toBeDisabled(); } finally { release(); scenario.quantityGate = null; }
+            await expect(quantity).toHaveValue('3');
+            await page.getByRole('button', { name: 'Decrease quantity', exact: true }).click();
+            await expect(quantity).toHaveValue('2');
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await expect(quantity).toHaveValue('2');
+            expect(writeRequests(scenario, '/api/cart/itemsUpdateQty').map(r => r.body.qty)).toEqual([3, 2]);
+            await capturePurchase(page, testInfo, '购物车数量');
+          });
+
+          test('购物车：键盘输入数量后金额使用接口返回值', async ({ page, scenario }, testInfo) => {
+            await openPurchasePage(page, '/cart');
+            const quantity = page.getByRole('textbox', { name: 'Quantity', exact: true });
+            await expect(quantity).toHaveValue('2');
+            await quantity.fill('3');
+            await quantity.press('Enter');
+            await expect.poll(() => scenario.qty).toBe(3);
+            await expect(page.locator('main')).toContainText('$59.97');
+            await capturePurchase(page, testInfo, '购物车手动数量');
+          });
+
+          test('购物车：库存拒绝时保持原数量并显示原因', async ({ page, scenario }, testInfo) => {
+            scenario.rejectQuantity = true;
+            await openPurchasePage(page, '/cart');
+            await page.getByRole('button', { name: 'Increase quantity', exact: true }).click();
+            await expect(page.getByText('Only 2 items are available', { exact: true })).toBeVisible();
+            await expect(page.getByRole('textbox', { name: 'Quantity', exact: true })).toHaveValue('2');
+            await expect(checkoutButton(page)).toBeEnabled();
+            await capturePurchase(page, testInfo, '购物车库存拒绝');
+          });
+
+          test('购物车：删除最后一件商品进入空购物车', async ({ page, scenario }, testInfo) => {
+            await openPurchasePage(page, '/cart');
+            if (testInfo.project.use.isMobile) {
+              await page.getByRole('button', { name: 'Decrease quantity', exact: true }).click();
+              await expect(page.getByRole('textbox', { name: 'Quantity', exact: true })).toHaveValue('1');
+              await page.getByRole('button', { name: 'Decrease quantity', exact: true }).click();
+            } else {
+              await page.getByRole('button', { name: 'Delete item', exact: true }).filter({ visible: true }).first().click();
+            }
+            await expect(page.getByText('Cart is empty', { exact: true })).toBeVisible();
+            await expect(checkoutButton(page)).toHaveCount(0);
+            expect(writeRequests(scenario, '/api/cart/itemsDelete')).toHaveLength(1);
+            await capturePurchase(page, testInfo, '删除后空购物车');
+          });
+
+          test('购物车：缺货商品禁用数量与结算', async ({ page, scenario }, testInfo) => {
+            scenario.stock = false;
+            await openPurchasePage(page, '/cart');
+            await expect(checkoutButton(page)).toBeDisabled();
+            await expect(page.getByRole('button', { name: 'Increase quantity', exact: true })).toBeDisabled();
+            await expect(page.getByText('This item is out of stock', { exact: true })).toBeVisible();
+            await capturePurchase(page, testInfo, '缺货购物车');
+          });
+
+          test('购买入口：游客结算回到登录并保留 checkout 返回地址', async ({ page, scenario }, testInfo) => {
+            scenario.authenticated = false;
+            await openPurchasePage(page, '/cart');
+            await expect(checkoutButton(page)).toBeEnabled();
+            await checkoutButton(page).click();
+            await expect(page).toHaveURL(/\/login\?redirect=%2Fcheckout/);
+            await expect(page.locator('#login-email')).toBeVisible();
+            await capturePurchase(page, testInfo, '游客结算登录');
+          });
+
+          test('购买主链路：购物车进入 checkout，无地址时禁止下单', async ({ page }, testInfo) => {
+            await openPurchasePage(page, '/cart');
+            await expect(checkoutButton(page)).toBeEnabled();
+            await checkoutButton(page).click();
+            await expect(page).toHaveURL(/\/checkout$/);
+            await expect(page.getByRole('button', { name: 'Add Shipping Address', exact: true })).toBeVisible();
+            await expect(placeOrderButton(page)).toBeDisabled();
+            await capturePurchase(page, testInfo, '无地址结算页');
+          });
+
+          test('购买入口：结算库存复核失败留在购物车并提示', async ({ page, scenario }, testInfo) => {
+            scenario.rejectCheckout = true;
+            await openPurchasePage(page, '/cart');
+            await expect(checkoutButton(page)).toBeEnabled();
+            await checkoutButton(page).click();
+            await expect(page.getByText('This cart is no longer available', { exact: true })).toBeVisible();
+            await expect(page).toHaveURL(/\/cart$/);
+            await capturePurchase(page, testInfo, '结算库存复核失败');
+          });
+
+          test('新增地址：弹窗布局、首个默认地址锁定、空提交校验', async ({ page, scenario }, testInfo) => {
+            const dialog = await openAddress(page);
+            await expect(dialog.getByRole('switch')).toBeDisabled();
+            await expect(dialog.getByRole('switch')).toHaveAttribute('aria-checked', 'true');
+            await dialog.getByRole('button', { name: 'Save Address', exact: true }).click();
+            await expect(dialog.getByText('Required', { exact: true })).toHaveCount(7);
+            expect(writeRequests(scenario, '/api/customer/address')).toHaveLength(0);
+            await dialog.locator('form').evaluate(el => { el.scrollTop = 0; });
+            await capturePurchase(page, testInfo, '新增地址必填校验', dialog);
+          });
+
+          test('新增地址：州选择、电话和 ZIP 校验', async ({ page, scenario }, testInfo) => {
+            const dialog = await openAddress(page);
+            await fillAddress(page, { telephone: '123', postcode: '12' });
+            await dialog.getByRole('button', { name: 'Save Address', exact: true }).click();
+            await expect(dialog.getByText('Phone number should be a 10-digit number', { exact: true })).toBeVisible();
+            await expect(dialog.getByText('Please enter a valid ZIP code (e.g. 12345 or 12345-6789)', { exact: true })).toBeVisible();
+            expect(writeRequests(scenario, '/api/customer/address')).toHaveLength(0);
+            await capturePurchase(page, testInfo, '地址格式校验', dialog);
+          });
+
+          test('新增地址：未保存关闭提示、继续编辑和放弃更改', async ({ page, scenario }, testInfo) => {
+            const dialog = await openAddress(page);
+            await page.locator('#acct-addr-firstname').fill('Browser');
+            await dialog.getByRole('button', { name: /^(Go back|Close)$/ }).filter({ visible: true }).click();
+            const confirm = page.getByRole('dialog', { name: 'Discard changes?', exact: true });
+            await expect(confirm).toBeInViewport();
+            await capturePurchase(page, testInfo, '地址放弃确认', confirm);
+            await confirm.getByRole('button', { name: 'Keep Editing', exact: true }).click();
+            await expect(page.locator('#acct-addr-firstname')).toHaveValue('Browser');
+            await dialog.getByRole('button', { name: /^(Go back|Close)$/ }).filter({ visible: true }).click();
+            await confirm.getByRole('button', { name: 'Discard', exact: true }).click();
+            await expect(dialog).not.toBeInViewport();
+            expect(writeRequests(scenario, '/api/customer/address')).toHaveLength(0);
+          });
+
+          test('新增地址：保存成功自动用于 checkout，刷新保留', async ({ page, scenario }, testInfo) => {
+            const dialog = await openAddress(page);
+            await fillAddress(page);
+            await dialog.getByRole('button', { name: 'Save Address', exact: true }).click();
+            await expect(dialog).not.toBeInViewport();
+            await expect(page.locator('main')).toContainText('123 Compatibility Lane, Suite 2');
+            await expect(placeOrderButton(page)).toBeEnabled();
+            expect(writeRequests(scenario, '/api/customer/address')[0].body).toMatchObject({
+              firstname: 'Browser', telephone: '2025550123', region_id: 43, default_shipping: true,
+            });
+            expect(writeRequests(scenario, '/api/checkout/address')[0].body).toEqual({ address_id: 7001 });
+            await page.reload({ waitUntil: 'domcontentloaded' });
+            await expect(page.locator('main')).toContainText('123 Compatibility Lane, Suite 2');
+            await capturePurchase(page, testInfo, '地址保存后结算');
+          });
+
+          test('新增地址：接口字段错误显示在弹窗且保留输入', async ({ page, scenario }, testInfo) => {
+            scenario.rejectAddress = true;
+            const dialog = await openAddress(page);
+            await fillAddress(page, { street: 'P.O. Box 123' });
+            await dialog.getByRole('button', { name: 'Save Address', exact: true }).click();
+            await expect(dialog.getByText('P.O. boxes are not supported', { exact: true })).toBeVisible();
+            await expect(page.locator('#acct-addr-street')).toHaveValue('P.O. Box 123');
+            await expect(placeOrderButton(page)).toBeDisabled();
+            await dialog.locator('form').evaluate(el => { el.scrollTop = 0; });
+            await capturePurchase(page, testInfo, '地址服务端校验', dialog);
+          });
+
+          test('选择地址：checkout 跳转地址簿并应用另一地址', async ({ page, scenario }, testInfo) => {
+            scenario.addresses = [{ ...testAddress }, { ...testAddress, id: 7002, street: ['456 Browser Avenue'], default_shipping: false, default_billing: false }];
+            scenario.selectedAddressId = 7001;
+            await openCheckout(page);
+            await page.getByRole('button', { name: 'Change', exact: true }).click();
+            await expect(page).toHaveURL(/\/account\/addresses\?select=1&selectedId=7001/);
+            await expect(page.getByText('Currently used', { exact: true })).toBeVisible();
+            await capturePurchase(page, testInfo, '结算地址选择');
+            await page.getByRole('button', { name: 'Use for this order', exact: true }).click();
+            await expect(page).toHaveURL(/\/checkout$/);
+            await expect(page.locator('main')).toContainText('456 Browser Avenue');
+            expect(writeRequests(scenario, '/api/checkout/address').at(-1).body).toEqual({ address_id: 7002 });
+          });
+
+          test('结算商品：打开和关闭商品清单弹窗', async ({ page }, testInfo) => {
+            await openCheckout(page);
+            await page.getByRole('button', { name: 'View 2 Items', exact: true }).click();
+            const dialog = page.getByRole('dialog', { name: 'Cart Items(2)', exact: true });
+            await expect(dialog).toBeInViewport();
+            await expect(dialog).toContainText('COSMOS BEAR Compatibility Test Item');
+            await capturePurchase(page, testInfo, '结算商品弹窗', dialog);
+            await dialog.getByRole('button', { name: 'Close cart items', exact: true }).click();
+            await expect(dialog).not.toBeInViewport();
+          });
+
+          test('结算优惠券：错误码提示、应用、移除及金额更新', async ({ page }, testInfo) => {
+            await openCheckout(page);
+            const input = page.getByRole('textbox', { name: 'Coupon code', exact: true });
+            await input.fill('INVALID');
+            await page.getByRole('button', { name: 'APPLY', exact: true }).click();
+            await expect(page.getByText('Invalid coupon code', { exact: true })).toBeVisible();
+            await input.fill('TEST5');
+            await input.press('Enter');
+            await expect(page.getByRole('button', { name: 'Remove coupon', exact: true })).toBeVisible();
+            await expect(page.locator('main')).toContainText('$34.98');
+            await page.getByRole('button', { name: 'Remove coupon', exact: true }).click();
+            await expect(input).toBeVisible();
+            await expect(page.locator('main')).toContainText('$39.98');
+            await capturePurchase(page, testInfo, '优惠券应用与移除');
+          });
+
+          test('结算优惠券：列表弹窗禁用失效券并可选择有效券', async ({ page }, testInfo) => {
+            await openCheckout(page);
+            await page.getByRole('button', { name: 'My Coupons (1)', exact: true }).click();
+            const dialog = page.getByRole('dialog', { name: 'My Coupons', exact: true });
+            await expect(dialog.getByRole('button', { name: /Expired test coupon/ })).toBeDisabled();
+            await capturePurchase(page, testInfo, '结算优惠券弹窗', dialog);
+            await dialog.getByRole('button', { name: /Compatibility test coupon/ }).click();
+            if (page.viewportSize().width >= 1024) await expect(dialog).toHaveCSS('opacity', '0');
+            else await expect(dialog).not.toBeInViewport();
+            await expect(page.getByRole('button', { name: 'Remove coupon', exact: true })).toBeVisible();
+            await page.getByRole('button', { name: 'Remove coupon', exact: true }).click();
+            await expect(page.getByRole('textbox', { name: 'Coupon code', exact: true })).toBeVisible();
+          });
+
+          test('支付方式：信用卡与 PayPal 切换，不创建订单', async ({ page, scenario }, testInfo) => {
+            scenario.addresses = [{ ...testAddress }]; scenario.selectedAddressId = 7001;
+            await openCheckout(page);
+            const card = page.locator('input[name="payment"][value="stripe_card"]');
+            const paypal = page.locator('input[name="payment"][value="paypal_express"]');
+            await page.locator('label').filter({ has: card }).click();
+            await expect(card).toBeChecked();
+            await expect.poll(() => scenario.payment).toBe('stripe_card');
+            await page.locator('label').filter({ has: paypal }).click();
+            await expect(paypal).toBeChecked();
+            await expect.poll(() => scenario.payment).toBe('paypal_express');
+            await expect(placeOrderButton(page)).toBeEnabled();
+            await capturePurchase(page, testInfo, '结算支付方式');
           });
           GLIMBOO_COMPAT_FILE_EOF
       - name: Install test dependencies
